@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// @dart = 2.6
+// @dart = 2.10
 part of engine;
 
 class Matrix4 {
@@ -13,7 +13,7 @@ class Matrix4 {
 
   /// Returns a matrix that is the inverse of [other] if [other] is invertible,
   /// otherwise `null`.
-  static Matrix4 tryInvert(Matrix4 other) {
+  static Matrix4? tryInvert(Matrix4 other) {
     final Matrix4 r = Matrix4.zero();
     final double determinant = r.copyInverse(other);
     if (determinant == 0.0) {
@@ -243,7 +243,7 @@ class Matrix4 {
   }
 
   /// Scale this matrix by a [Vector3], [Vector4], or x,y,z
-  void scale(double x, [double y, double z]) {
+  void scale(double x, [double? y, double? z]) {
     final double sx = x;
     final double sy = y ?? x;
     final double sz = z ?? x;
@@ -268,7 +268,7 @@ class Matrix4 {
 
   /// Create a copy of [this] scaled by a [Vector3], [Vector4] or [x],[y], and
   /// [z].
-  Matrix4 scaled(double x, [double y, double z]) => clone()..scale(x, y, z);
+  Matrix4 scaled(double x, [double? y, double? z]) => clone()..scale(x, y, z);
 
   /// Zeros [this].
   void setZero() {
@@ -411,26 +411,40 @@ class Matrix4 {
   }
 
   bool isIdentity() =>
-      _m4storage[0] == 1.0 // col 1
-      &&
+      _m4storage[0] == 1.0 && // col 1
       _m4storage[1] == 0.0 &&
       _m4storage[2] == 0.0 &&
       _m4storage[3] == 0.0 &&
-      _m4storage[4] == 0.0 // col 2
-      &&
+      _m4storage[4] == 0.0 && // col 2
       _m4storage[5] == 1.0 &&
       _m4storage[6] == 0.0 &&
       _m4storage[7] == 0.0 &&
-      _m4storage[8] == 0.0 // col 3
-      &&
+      _m4storage[8] == 0.0 && // col 3
       _m4storage[9] == 0.0 &&
       _m4storage[10] == 1.0 &&
       _m4storage[11] == 0.0 &&
-      _m4storage[12] == 0.0 // col 4
-      &&
+      _m4storage[12] == 0.0 && // col 4
       _m4storage[13] == 0.0 &&
       _m4storage[14] == 0.0 &&
       _m4storage[15] == 1.0;
+
+  /// Whether transform is identity or simple translation using m[12,13,14].
+  ///
+  /// We check for [15] first since that will eliminate bounds checks for rest.
+  bool isIdentityOrTranslation() =>
+      _m4storage[15] == 1.0 &&
+      _m4storage[0] == 1.0 && // col 1
+          _m4storage[1] == 0.0 &&
+          _m4storage[2] == 0.0 &&
+          _m4storage[3] == 0.0 &&
+          _m4storage[4] == 0.0 && // col 2
+          _m4storage[5] == 1.0 &&
+          _m4storage[6] == 0.0 &&
+          _m4storage[7] == 0.0 &&
+          _m4storage[8] == 0.0 && // col 3
+          _m4storage[9] == 0.0 &&
+          _m4storage[10] == 1.0 &&
+          _m4storage[11] == 0.0;
 
   /// Returns the translation vector from this homogeneous transformation matrix.
   Vector3 getTranslation() {
@@ -963,7 +977,7 @@ class Matrix4 {
 
   /// Rotate a copy of [arg] of type [Vector3] using the rotation defined by
   /// [this]. If a [out] parameter is supplied, the copy is stored in [out].
-  Vector3 rotated3(Vector3 arg, [Vector3 out]) {
+  Vector3 rotated3(Vector3 arg, [Vector3? out]) {
     if (out == null) {
       out = Vector3.copy(arg);
     } else {
@@ -1132,7 +1146,7 @@ class Vector3 {
 
   /// Generate random vector in the range (0, 0, 0) to (1, 1, 1). You can
   /// optionally pass your own random number generator.
-  factory Vector3.random([math.Random rng]) {
+  factory Vector3.random([math.Random? rng]) {
     rng ??= math.Random();
     return Vector3(rng.nextDouble(), rng.nextDouble(), rng.nextDouble());
   }

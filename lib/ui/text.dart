@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// @dart = 2.9
+// @dart = 2.10
 
 part of dart.ui;
 
@@ -85,7 +85,7 @@ class FontWeight {
     assert(t != null); // ignore: unnecessary_null_comparison
     if (a == null && b == null)
       return null;
-    return values[_lerpInt((a ?? normal).index, (b ?? normal).index, t).round().clamp(0, 8) as int];
+    return values[_lerpInt((a ?? normal).index, (b ?? normal).index, t).round().clamp(0, 8)];
   }
 
   @override
@@ -106,7 +106,7 @@ class FontWeight {
 
 /// A feature tag and value that affect the selection of glyphs in a font.
 ///
-/// {@tool sample}
+/// {@tool sample --template=freeform}
 ///
 /// This example shows usage of several OpenType font features, including
 /// Small Caps (smcp), old-style figures, fractional ligatures and stylistic
@@ -298,7 +298,7 @@ class FontFeature {
   }
 
   @override
-  bool operator ==(dynamic other) {
+  bool operator ==(Object other) {
     if (identical(this, other))
       return true;
     if (other.runtimeType != runtimeType)
@@ -389,7 +389,7 @@ class TextDecoration {
   static const TextDecoration lineThrough = TextDecoration._(0x4);
 
   @override
-  bool operator ==(dynamic other) {
+  bool operator ==(Object other) {
     return other is TextDecoration
         && other._mask == _mask;
   }
@@ -432,7 +432,7 @@ enum TextDecorationStyle {
   wavy
 }
 
-/// {@template flutter.dart:ui.textHeightBehavior}
+/// {@template dart.ui.textHeightBehavior}
 /// Defines how the paragraph will apply [TextStyle.height] to the ascent of the
 /// first line and descent of the last line.
 ///
@@ -496,7 +496,7 @@ class TextHeightBehavior {
   }
 
   @override
-  bool operator ==(dynamic other) {
+  bool operator ==(Object other) {
     if (other.runtimeType != runtimeType)
       return false;
     return other is TextHeightBehavior
@@ -767,7 +767,7 @@ class TextStyle {
   final List<FontFeature>? _fontFeatures;
 
   @override
-  bool operator ==(dynamic other) {
+  bool operator ==(Object other) {
     if (identical(this, other))
       return true;
     return other is TextStyle
@@ -1007,7 +1007,7 @@ class ParagraphStyle {
   final Locale? _locale;
 
   @override
-  bool operator ==(dynamic other) {
+  bool operator ==(Object other) {
     if (identical(this, other))
       return true;
     if (other.runtimeType != runtimeType)
@@ -1186,7 +1186,7 @@ class StrutStyle {
 
 
   @override
-  bool operator ==(dynamic other) {
+  bool operator ==(Object other) {
     if (identical(this, other))
       return true;
     if (other.runtimeType != runtimeType)
@@ -1350,7 +1350,7 @@ class TextBox {
   }
 
   @override
-  bool operator ==(dynamic other) {
+  bool operator ==(Object other) {
     if (identical(this, other))
       return true;
     if (other.runtimeType != runtimeType)
@@ -1462,7 +1462,7 @@ class TextPosition {
   final TextAffinity affinity;
 
   @override
-  bool operator ==(dynamic other) {
+  bool operator ==(Object other) {
     if (other.runtimeType != runtimeType)
       return false;
     return other is TextPosition
@@ -1546,7 +1546,7 @@ class TextRange {
   }
 
   @override
-  bool operator ==(dynamic other) {
+  bool operator ==(Object other) {
     if (identical(this, other))
       return true;
     return other is TextRange
@@ -1598,7 +1598,7 @@ class ParagraphConstraints {
   final double width;
 
   @override
-  bool operator ==(dynamic other) {
+  bool operator ==(Object other) {
     if (other.runtimeType != runtimeType)
       return false;
     return other is ParagraphConstraints
@@ -1638,7 +1638,7 @@ enum BoxHeightStyle {
   /// The top and bottom of each box will cover half of the
   /// space above and half of the space below the line.
   ///
-  /// {@template flutter.dart:ui.boxHeightStyle.includeLineSpacing}
+  /// {@template dart.ui.boxHeightStyle.includeLineSpacing}
   /// The top edge of each line should be the same as the bottom edge
   /// of the line above. There should be no gaps in vertical coverage given any
   /// amount of line spacing. Line spacing is not included above the first line
@@ -1650,14 +1650,14 @@ enum BoxHeightStyle {
   ///
   /// The line spacing will be added to the top of the box.
   ///
-  /// {@macro flutter.dart:ui.boxHeightStyle.includeLineSpacing}
+  /// {@macro dart.ui.boxHeightStyle.includeLineSpacing}
   includeLineSpacingTop,
 
   /// Extends the bottom edge of the bounds to fully cover any line spacing.
   ///
   /// The line spacing will be added to the bottom of the box.
   ///
-  /// {@macro flutter.dart:ui.boxHeightStyle.includeLineSpacing}
+  /// {@macro dart.ui.boxHeightStyle.includeLineSpacing}
   includeLineSpacingBottom,
 
   /// Calculate box heights based on the metrics of this paragraph's [StrutStyle].
@@ -1965,7 +1965,8 @@ class Paragraph extends NativeFieldWrapperClass2 {
 
   /// Returns a list of text boxes that enclose all placeholders in the paragraph.
   ///
-  /// The order of the boxes are in the same order as passed in through [addPlaceholder].
+  /// The order of the boxes are in the same order as passed in through
+  /// [ParagraphBuilder.addPlaceholder].
   ///
   /// Coordinates of the [TextBox] are relative to the upper-left corner of the paragraph,
   /// where positive y values indicate down.
@@ -2241,7 +2242,7 @@ class ParagraphBuilder extends NativeFieldWrapperClass2 {
     _placeholderCount++;
     _placeholderScales.add(scale);
   }
-  String _addPlaceholder(double width, double height, int alignment, double baselineOffset, int? baseline) native 'ParagraphBuilder_addPlaceholder';
+  String? _addPlaceholder(double width, double height, int alignment, double baselineOffset, int? baseline) native 'ParagraphBuilder_addPlaceholder';
 
   /// Applies the given paragraph style and returns a [Paragraph] containing the
   /// added text and associated styling.
@@ -2272,11 +2273,30 @@ final ByteData _fontChangeMessage = utf8.encoder.convert(
 ).buffer.asByteData();
 
 FutureOr<void> _sendFontChangeMessage() async {
-  window.onPlatformMessage?.call(
-    'flutter/system',
-    _fontChangeMessage,
-    (_) {},
-  );
+  const String kSystemChannelName = 'flutter/system';
+  if (PlatformDispatcher.instance.onPlatformMessage != null) {
+    _invoke3<String, ByteData?, PlatformMessageResponseCallback>(
+      PlatformDispatcher.instance.onPlatformMessage,
+      PlatformDispatcher.instance._onPlatformMessageZone,
+      kSystemChannelName,
+      _fontChangeMessage,
+      (ByteData? responseData) { },
+    );
+  } else {
+    channelBuffers.push(kSystemChannelName, _fontChangeMessage, (ByteData? responseData) { });
+  }
 }
+
+// TODO(gspencergoog): remove this template block once the framework templates
+// are renamed to not reference it.
+/// {@template flutter.dart:ui.textHeightBehavior}
+/// Defines how the paragraph will apply [TextStyle.height] to the ascent of the
+/// first line and descent of the last line.
+///
+/// Each boolean value represents whether the [TextStyle.height] modifier will
+/// be applied to the corresponding metric. By default, all properties are true,
+/// and [TextStyle.height] is applied as normal. When set to false, the font's
+/// default ascent will be used.
+/// {@endtemplate}
 
 String _loadFontFromList(Uint8List list, _Callback<void> callback, String? fontFamily) native 'loadFontFromList';

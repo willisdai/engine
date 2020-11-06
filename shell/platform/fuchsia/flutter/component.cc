@@ -20,6 +20,7 @@
 #include <zircon/dlfcn.h>
 #include <zircon/status.h>
 #include <zircon/types.h>
+
 #include <memory>
 #include <regex>
 #include <sstream>
@@ -54,6 +55,7 @@ constexpr char kDataKey[] = "data";
 constexpr char kAssetsKey[] = "assets";
 constexpr char kTmpPath[] = "/tmp";
 constexpr char kServiceRootPath[] = "/svc";
+constexpr char kRunnerConfigPath[] = "/config/data/flutter_runner_config";
 
 // static
 void Application::ParseProgramMetadata(
@@ -346,11 +348,13 @@ Application::Application(
     }
   }
 
-  // Load and use product-specific configuration, if it exists.
+  // Load and use runner-specific configuration, if it exists.
   std::string json_string;
-  if (dart_utils::ReadFileToString(
-          "/config/data/frame_scheduling_performance_values", &json_string)) {
+  if (dart_utils::ReadFileToString(kRunnerConfigPath, &json_string)) {
     product_config_ = FlutterRunnerProductConfiguration(json_string);
+  } else {
+    FML_LOG(WARNING) << "Failed to load runner configuration from "
+                     << kRunnerConfigPath << "; using default config values.";
   }
 
 #if defined(DART_PRODUCT)
@@ -364,6 +368,12 @@ Application::Application(
 
   // Controls whether category "skia" trace events are enabled.
   settings_.trace_skia = true;
+
+  settings_.verbose_logging = true;
+
+  settings_.advisory_script_uri = debug_label_;
+
+  settings_.advisory_script_entrypoint = debug_label_;
 
   settings_.icu_data_path = "";
 
@@ -392,20 +402,7 @@ Application::Application(
   settings_.task_observer_remove = std::bind(
       &CurrentMessageLoopRemoveAfterTaskObserver, std::placeholders::_1);
 
-  // TODO(FL-117): Re-enable causal async stack traces when this issue is
-  // addressed.
-  settings_.dart_flags = {"--no_causal_async_stacks"};
-
-  // Disable code collection as it interferes with JIT code warmup
-  // by decreasing usage counters and flushing code which is still useful.
-  settings_.dart_flags.push_back("--no-collect_code");
-
-  if (!flutter::DartVM::IsRunningPrecompiledCode()) {
-    // The interpreter is enabled unconditionally in JIT mode. If an app is
-    // built for debugging (that is, with no bytecode), the VM will fall back on
-    // ASTs.
-    settings_.dart_flags.push_back("--enable_interpreter");
-  }
+  settings_.dart_flags = {"--no_causal_async_stacks", "--lazy_async_stacks"};
 
   // Don't collect CPU samples from Dart VM C++ code.
   settings_.dart_flags.push_back("--no_profile_vm");
@@ -484,7 +481,7 @@ class FileInNamespaceBuffer final : public fml::Mapping {
     }
     uintptr_t addr;
     zx_status_t status =
-        zx::vmar::root_self()->map(0, buffer.vmo, 0, buffer.size, flags, &addr);
+        zx::vmar::root_self()->map(flags, 0, buffer.vmo, 0, buffer.size, &addr);
     if (status != ZX_OK) {
       FML_LOG(FATAL) << "Failed to map " << path << ": "
                      << zx_status_get_string(status);
@@ -607,8 +604,8 @@ void Application::OnEngineTerminate(const Engine* shell_holder) {
   // terminate when the last shell goes away. The error code return to the
   // application controller will be the last isolate that had an error.
   auto return_code = shell_holder->GetEngineReturnCode();
-  if (return_code.first) {
-    last_return_code_ = return_code;
+  if (return_code.has_value()) {
+    last_return_code_ = {true, return_code.value()};
   }
 
   shell_holders_.erase(found);

@@ -10,36 +10,19 @@
 namespace flutter {
 
 OpacityLayer::OpacityLayer(SkAlpha alpha, const SkPoint& offset)
-    : alpha_(alpha), offset_(offset) {
-  // Ensure OpacityLayer has only one direct child.
-  //
-  // This is needed to ensure that retained rendering can always be applied to
-  // save the costly saveLayer.
-  //
-  // Any children will be actually added as children of this empty
-  // ContainerLayer.
-  ContainerLayer::Add(std::make_shared<ContainerLayer>());
-}
-
-void OpacityLayer::Add(std::shared_ptr<Layer> layer) {
-  GetChildContainer()->Add(std::move(layer));
-}
+    : alpha_(alpha), offset_(offset) {}
 
 void OpacityLayer::Preroll(PrerollContext* context, const SkMatrix& matrix) {
   TRACE_EVENT0("flutter", "OpacityLayer::Preroll");
+  FML_DCHECK(!GetChildContainer()->layers().empty());  // We can't be a leaf.
 
-  ContainerLayer* container = GetChildContainer();
-  FML_DCHECK(!container->layers().empty());  // OpacityLayer can't be a leaf.
-
-  const bool parent_is_opaque = context->is_opaque;
   SkMatrix child_matrix = matrix;
-  child_matrix.postTranslate(offset_.fX, offset_.fY);
+  child_matrix.preTranslate(offset_.fX, offset_.fY);
 
   // Similar to what's done in TransformLayer::Preroll, we have to apply the
   // reverse transformation to the cull rect to properly cull child layers.
   context->cull_rect = context->cull_rect.makeOffset(-offset_.fX, -offset_.fY);
 
-  context->is_opaque = parent_is_opaque && (alpha_ == SK_AlphaOPAQUE);
   context->mutators_stack.PushTransform(
       SkMatrix::Translate(offset_.fX, offset_.fY));
   context->mutators_stack.PushOpacity(alpha_);
@@ -48,7 +31,6 @@ void OpacityLayer::Preroll(PrerollContext* context, const SkMatrix& matrix) {
   ContainerLayer::Preroll(context, child_matrix);
   context->mutators_stack.Pop();
   context->mutators_stack.Pop();
-  context->is_opaque = parent_is_opaque;
 
   {
     set_paint_bounds(paint_bounds().makeOffset(offset_.fX, offset_.fY));
@@ -101,30 +83,15 @@ void OpacityLayer::Paint(PaintContext& context) const {
   PaintChildren(context);
 }
 
-#if defined(OS_FUCHSIA)
+#if defined(LEGACY_FUCHSIA_EMBEDDER)
 
-void OpacityLayer::UpdateScene(SceneUpdateContext& context) {
-  float saved_alpha = context.alphaf();
-  context.set_alphaf(context.alphaf() * (alpha_ / 255.f));
+void OpacityLayer::UpdateScene(std::shared_ptr<SceneUpdateContext> context) {
+  float saved_alpha = context->alphaf();
+  context->set_alphaf(context->alphaf() * (alpha_ / 255.f));
   ContainerLayer::UpdateScene(context);
-  context.set_alphaf(saved_alpha);
+  context->set_alphaf(saved_alpha);
 }
 
-#endif  // defined(OS_FUCHSIA)
-
-ContainerLayer* OpacityLayer::GetChildContainer() const {
-  FML_DCHECK(layers().size() == 1);
-
-  return static_cast<ContainerLayer*>(layers()[0].get());
-}
-
-Layer* OpacityLayer::GetCacheableChild() const {
-  ContainerLayer* child_container = GetChildContainer();
-  if (child_container->layers().size() == 1) {
-    return child_container->layers()[0].get();
-  }
-
-  return child_container;
-}
+#endif
 
 }  // namespace flutter

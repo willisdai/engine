@@ -59,7 +59,7 @@ static void LogLastEGLError() {
   FML_LOG(ERROR) << "Unknown EGL Error";
 }
 
-static EGLResult<EGLSurface> CreateContext(EGLDisplay display,
+static EGLResult<EGLContext> CreateContext(EGLDisplay display,
                                            EGLConfig config,
                                            EGLContext share = EGL_NO_CONTEXT) {
   EGLint attributes[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
@@ -246,6 +246,14 @@ bool AndroidContextGL::ClearCurrent() {
     return false;
   }
   return true;
+}
+
+EGLContext AndroidContextGL::CreateNewContext() const {
+  bool success;
+  EGLContext context;
+  std::tie(success, context) =
+      CreateContext(environment_->Display(), config_, EGL_NO_CONTEXT);
+  return success ? context : EGL_NO_CONTEXT;
 }
 
 }  // namespace flutter

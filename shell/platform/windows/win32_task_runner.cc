@@ -5,13 +5,16 @@
 #include "flutter/shell/platform/windows/win32_task_runner.h"
 
 #include <atomic>
+#include <iostream>
 #include <utility>
 
 namespace flutter {
 
 Win32TaskRunner::Win32TaskRunner(DWORD main_thread_id,
+                                 CurrentTimeProc get_current_time,
                                  const TaskExpiredCallback& on_task_expired)
     : main_thread_id_(main_thread_id),
+      get_current_time_(get_current_time),
       on_task_expired_(std::move(on_task_expired)) {}
 
 Win32TaskRunner::~Win32TaskRunner() = default;
@@ -66,10 +69,9 @@ std::chrono::nanoseconds Win32TaskRunner::ProcessTasks() {
 }
 
 Win32TaskRunner::TaskTimePoint Win32TaskRunner::TimePointFromFlutterTime(
-    uint64_t flutter_target_time_nanos) {
+    uint64_t flutter_target_time_nanos) const {
   const auto now = TaskTimePoint::clock::now();
-  const auto flutter_duration =
-      flutter_target_time_nanos - FlutterEngineGetCurrentTime();
+  const auto flutter_duration = flutter_target_time_nanos - get_current_time_();
   return now + std::chrono::nanoseconds(flutter_duration);
 }
 
@@ -93,7 +95,7 @@ void Win32TaskRunner::PostTask(FlutterTask flutter_task,
   }
 
   if (!PostThreadMessage(main_thread_id_, WM_NULL, 0, 0)) {
-    OutputDebugString(L"Failed to post message to main thread.");
+    std::cerr << "Failed to post message to main thread." << std::endl;
   }
 }
 

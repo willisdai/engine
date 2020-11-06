@@ -15,7 +15,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.provider.Settings;
-import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
@@ -28,6 +27,8 @@ import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
 import io.flutter.BuildConfig;
+import io.flutter.Log;
+import io.flutter.embedding.android.FlutterActivity;
 import io.flutter.embedding.engine.systemchannels.AccessibilityChannel;
 import io.flutter.plugin.platform.PlatformViewsAccessibilityDelegate;
 import io.flutter.util.Predicate;
@@ -206,6 +207,11 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
   // beneath a stylus or mouse cursor.
   @Nullable private SemanticsNode hoveredObject;
 
+  @VisibleForTesting
+  public int getHoveredObjectId() {
+    return hoveredObject.id;
+  }
+
   // A Java/Android cached representation of the Flutter app's navigation stack. The Flutter
   // navigation stack is tracked so that accessibility announcements can be made during Flutter's
   // navigation changes.
@@ -222,6 +228,9 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
   @NonNull private Integer lastLeftFrameInset = 0;
 
   @Nullable private OnAccessibilityChangeListener onAccessibilityChangeListener;
+
+  // Set to true after {@code release} has been invoked.
+  private boolean isReleased = false;
 
   // Handler for all messages received from Flutter via the {@code accessibilityChannel}
   private final AccessibilityChannel.AccessibilityMessageHandler accessibilityMessageHandler =
@@ -274,6 +283,9 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
           new AccessibilityManager.AccessibilityStateChangeListener() {
             @Override
             public void onAccessibilityStateChanged(boolean accessibilityEnabled) {
+              if (isReleased) {
+                return;
+              }
               if (accessibilityEnabled) {
                 accessibilityChannel.setAccessibilityMessageHandler(accessibilityMessageHandler);
                 accessibilityChannel.onAndroidAccessibilityEnabled();
@@ -307,6 +319,9 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
 
         @Override
         public void onChange(boolean selfChange, Uri uri) {
+          if (isReleased) {
+            return;
+          }
           // Retrieve the current value of TRANSITION_ANIMATION_SCALE from the OS.
           String value =
               Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR1
@@ -374,6 +389,9 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
           new AccessibilityManager.TouchExplorationStateChangeListener() {
             @Override
             public void onTouchExplorationStateChanged(boolean isTouchExplorationEnabled) {
+              if (isReleased) {
+                return;
+              }
               if (isTouchExplorationEnabled) {
                 accessibilityFeatureFlags |= AccessibilityFeature.ACCESSIBLE_NAVIGATION.value;
               } else {
@@ -421,6 +439,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
    * on this {@code AccessibilityBridge} after invoking {@code release()} is undefined.
    */
   public void release() {
+    isReleased = true;
     // platformViewsAccessibilityDelegate should be @NonNull once the plumbing
     // for io.flutter.embedding.engine.android.FlutterView is done.
     // TODO(mattcarrol): Remove the null check once the plumbing is done.
@@ -528,12 +547,22 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
       return null;
     }
 
+    // Generate accessibility node for platform views using a virtual display.
+    //
+    // In this case, register the accessibility node in the view embedder,
+    // so the accessibility tree can be mirrored as a subtree of the Flutter accessibility tree.
+    // This is in constrast to hybrid composition where the embeded view is in the view hiearchy,
+    // so it doesn't need to be mirrored.
+    //
+    // See the case down below for how hybrid composition is handled.
     if (semanticsNode.platformViewId != -1) {
-      // For platform views we delegate the node creation to the accessibility view embedder.
       View embeddedView =
           platformViewsAccessibilityDelegate.getPlatformViewById(semanticsNode.platformViewId);
-      Rect bounds = semanticsNode.getGlobalRect();
-      return accessibilityViewEmbedder.getRootNode(embeddedView, semanticsNode.id, bounds);
+      boolean childUsesVirtualDisplay = !(embeddedView.getContext() instanceof FlutterActivity);
+      if (childUsesVirtualDisplay) {
+        Rect bounds = semanticsNode.getGlobalRect();
+        return accessibilityViewEmbedder.getRootNode(embeddedView, semanticsNode.id, bounds);
+      }
     }
 
     AccessibilityNodeInfo result =
@@ -810,11 +839,28 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
     }
 
     for (SemanticsNode child : semanticsNode.childrenInTraversalOrder) {
-      if (!child.hasFlag(Flag.IS_HIDDEN)) {
-        result.addChild(rootAccessibilityView, child.id);
+      if (child.hasFlag(Flag.IS_HIDDEN)) {
+        continue;
       }
-    }
+      if (child.platformViewId != -1) {
+        View embeddedView =
+            platformViewsAccessibilityDelegate.getPlatformViewById(child.platformViewId);
 
+        // Add the embeded view as a child of the current accessibility node if it's using
+        // hybrid composition.
+        //
+        // In this case, the view is in the Activity's view hierarchy, so it doesn't need to be
+        // mirrored.
+        //
+        // See the case above for how virtual displays are handled.
+        boolean childUsesHybridComposition = embeddedView.getContext() instanceof FlutterActivity;
+        if (childUsesHybridComposition) {
+          result.addChild(embeddedView);
+          continue;
+        }
+      }
+      result.addChild(rootAccessibilityView, child.id);
+    }
     return result;
   }
 
@@ -1315,16 +1361,29 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
 
     // Dispatch a TYPE_WINDOW_STATE_CHANGED event if the most recent route id changed from the
     // previously cached route id.
+
+    // Finds the last route that is not in the previous routes.
     SemanticsNode lastAdded = null;
     for (SemanticsNode semanticsNode : newRoutes) {
       if (!flutterNavigationStack.contains(semanticsNode.id)) {
         lastAdded = semanticsNode;
       }
     }
+
+    // If all the routes are in the previous route, get the last route.
     if (lastAdded == null && newRoutes.size() > 0) {
       lastAdded = newRoutes.get(newRoutes.size() - 1);
     }
-    if (lastAdded != null && lastAdded.id != previousRouteId) {
+
+    // There are two cases if lastAdded != nil
+    // 1. lastAdded is not in previous routes. In this case,
+    //    lastAdded.id != previousRouteId
+    // 2. All new routes are in previous routes and
+    //    lastAdded = newRoutes.last.
+    // In the first case, we need to announce new route. In the second case,
+    // we need to announce if one list is shorter than the other.
+    if (lastAdded != null
+        && (lastAdded.id != previousRouteId || newRoutes.size() != flutterNavigationStack.size())) {
       previousRouteId = lastAdded.id;
       sendWindowChangeEvent(lastAdded);
     }
@@ -1548,6 +1607,17 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
     AccessibilityEvent event =
         obtainAccessibilityEvent(route.id, AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED);
     String routeName = route.getRouteName();
+    if (routeName == null) {
+      // The routeName will be null when there is no semantics node that represnets namesRoute in
+      // the scopeRoute. The TYPE_WINDOW_STATE_CHANGED only works the route name is not null and not
+      // empty. Gives it a whitespace will make it focus the first semantics node without
+      // pronouncing any word.
+      //
+      // The other way to trigger a focus change is to send a TYPE_VIEW_FOCUSED to the
+      // rootAccessibilityView. However, it is less predictable which semantics node it will focus
+      // next.
+      routeName = " ";
+    }
     event.getText().add(routeName);
     sendAccessibilityEvent(event);
   }
@@ -2115,7 +2185,7 @@ public class AccessibilityBridge extends AccessibilityNodeProvider {
           return result;
         }
       }
-      return this;
+      return isFocusable() ? this : null;
     }
 
     // TODO(goderbauer): This should be decided by the framework once we have more information

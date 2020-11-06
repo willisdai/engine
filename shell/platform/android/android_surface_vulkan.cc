@@ -13,11 +13,11 @@
 namespace flutter {
 
 AndroidSurfaceVulkan::AndroidSurfaceVulkan(
-    std::shared_ptr<PlatformViewAndroidJNI> jni_facade)
-    : proc_table_(fml::MakeRefCounted<vulkan::VulkanProcTable>()) {
-  external_view_embedder_ =
-      std::make_unique<AndroidExternalViewEmbedder>(jni_facade);
-}
+    std::shared_ptr<AndroidContext> android_context,
+    std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
+    std::shared_ptr<AndroidExternalViewEmbedder> external_view_embedder)
+    : external_view_embedder_(external_view_embedder),
+      proc_table_(fml::MakeRefCounted<vulkan::VulkanProcTable>()) {}
 
 AndroidSurfaceVulkan::~AndroidSurfaceVulkan() = default;
 
@@ -30,7 +30,7 @@ void AndroidSurfaceVulkan::TeardownOnScreenContext() {
 }
 
 std::unique_ptr<Surface> AndroidSurfaceVulkan::CreateGPUSurface(
-    GrContext* gr_context) {
+    GrDirectContext* gr_context) {
   if (!IsValid()) {
     return nullptr;
   }

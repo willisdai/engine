@@ -16,15 +16,16 @@
 
 #include "flutter/fml/make_copyable.h"
 #include "flutter/fml/message_loop.h"
+#include "flutter/fml/platform/android/jni_util.h"
 #include "flutter/shell/common/rasterizer.h"
 #include "flutter/shell/platform/android/platform_view_android.h"
 
 namespace flutter {
 
-static WindowData GetDefaultWindowData() {
-  WindowData window_data;
-  window_data.lifecycle_state = "AppLifecycleState.detached";
-  return window_data;
+static PlatformData GetDefaultPlatformData() {
+  PlatformData platform_data;
+  platform_data.lifecycle_state = "AppLifecycleState.detached";
+  return platform_data;
 }
 
 AndroidShellHolder::AndroidShellHolder(
@@ -74,12 +75,13 @@ AndroidShellHolder::AndroidShellHolder(
           );
         }
         weak_platform_view = platform_view_android->GetWeakPtr();
+        shell.OnDisplayUpdates(DisplayUpdateType::kStartup,
+                               {Display(jni_facade->GetDisplayRefreshRate())});
         return platform_view_android;
       };
 
   Shell::CreateCallback<Rasterizer> on_create_rasterizer = [](Shell& shell) {
-    return std::make_unique<Rasterizer>(shell, shell.GetTaskRunners(),
-                                        shell.GetIsGpuDisabledSyncSwitch());
+    return std::make_unique<Rasterizer>(shell);
   };
 
   // The current thread will be used as the platform thread. Ensure that the
@@ -100,45 +102,42 @@ AndroidShellHolder::AndroidShellHolder(
     ui_runner = thread_host_.ui_thread->GetTaskRunner();
     io_runner = thread_host_.io_thread->GetTaskRunner();
   }
+
   flutter::TaskRunners task_runners(thread_label,     // label
                                     platform_runner,  // platform
                                     gpu_runner,       // raster
                                     ui_runner,        // ui
                                     io_runner         // io
   );
+  task_runners.GetRasterTaskRunner()->PostTask([]() {
+    // Android describes -8 as "most important display threads, for
+    // compositing the screen and retrieving input events". Conservatively
+    // set the raster thread to slightly lower priority than it.
+    if (::setpriority(PRIO_PROCESS, gettid(), -5) != 0) {
+      // Defensive fallback. Depending on the OEM, it may not be possible
+      // to set priority to -5.
+      if (::setpriority(PRIO_PROCESS, gettid(), -2) != 0) {
+        FML_LOG(ERROR) << "Failed to set GPU task runner priority";
+      }
+    }
+  });
+  task_runners.GetUITaskRunner()->PostTask([]() {
+    if (::setpriority(PRIO_PROCESS, gettid(), -1) != 0) {
+      FML_LOG(ERROR) << "Failed to set UI task runner priority";
+    }
+  });
 
   shell_ =
-      Shell::Create(task_runners,             // task runners
-                    GetDefaultWindowData(),   // window data
-                    settings_,                // settings
-                    on_create_platform_view,  // platform view create callback
-                    on_create_rasterizer      // rasterizer create callback
+      Shell::Create(task_runners,              // task runners
+                    GetDefaultPlatformData(),  // window data
+                    settings_,                 // settings
+                    on_create_platform_view,   // platform view create callback
+                    on_create_rasterizer       // rasterizer create callback
       );
 
   platform_view_ = weak_platform_view;
   FML_DCHECK(platform_view_);
-
   is_valid_ = shell_ != nullptr;
-
-  if (is_valid_) {
-    task_runners.GetRasterTaskRunner()->PostTask([]() {
-      // Android describes -8 as "most important display threads, for
-      // compositing the screen and retrieving input events". Conservatively
-      // set the raster thread to slightly lower priority than it.
-      if (::setpriority(PRIO_PROCESS, gettid(), -5) != 0) {
-        // Defensive fallback. Depending on the OEM, it may not be possible
-        // to set priority to -5.
-        if (::setpriority(PRIO_PROCESS, gettid(), -2) != 0) {
-          FML_LOG(ERROR) << "Failed to set GPU task runner priority";
-        }
-      }
-    });
-    task_runners.GetUITaskRunner()->PostTask([]() {
-      if (::setpriority(PRIO_PROCESS, gettid(), -1) != 0) {
-        FML_LOG(ERROR) << "Failed to set UI task runner priority";
-      }
-    });
-  }
 }
 
 AndroidShellHolder::~AndroidShellHolder() {

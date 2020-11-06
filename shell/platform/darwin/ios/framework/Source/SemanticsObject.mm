@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "flutter/shell/platform/darwin/ios/framework/Source/SemanticsObject.h"
+#import "flutter/shell/platform/darwin/ios/framework/Source/SemanticsObject.h"
 
 #include "flutter/fml/platform/darwin/scoped_nsobject.h"
-#include "flutter/shell/platform/darwin/ios/framework/Source/FlutterPlatformViews_Internal.h"
+#import "flutter/shell/platform/darwin/ios/framework/Source/FlutterPlatformViews_Internal.h"
 
 namespace {
 
@@ -378,6 +378,11 @@ flutter::SemanticsAction GetSemanticsActionForScrollDirection(
 
 #pragma mark - UIAccessibilityElement protocol
 
+- (void)setAccessibilityContainer:(id)container {
+  // Explicit noop.  The containers are calculated lazily in `accessibilityContainer`.
+  // See also: https://github.com/flutter/flutter/issues/54366
+}
+
 - (id)accessibilityContainer {
   if ([self hasChildren] || [self uid] == kRootNodeId) {
     if (_container == nil)
@@ -447,7 +452,9 @@ flutter::SemanticsAction GetSemanticsActionForScrollDirection(
 - (void)accessibilityElementDidBecomeFocused {
   if (![self isAccessibilityBridgeAlive])
     return;
-  if ([self node].HasFlag(flutter::SemanticsFlags::kIsHidden)) {
+  [self bridge]->AccessibilityObjectDidBecomeFocused([self uid]);
+  if ([self node].HasFlag(flutter::SemanticsFlags::kIsHidden) ||
+      [self node].HasFlag(flutter::SemanticsFlags::kIsHeader)) {
     [self bridge]->DispatchSemanticsAction([self uid], flutter::SemanticsAction::kShowOnScreen);
   }
   if ([self node].HasAction(flutter::SemanticsAction::kDidGainAccessibilityFocus)) {
@@ -459,6 +466,7 @@ flutter::SemanticsAction GetSemanticsActionForScrollDirection(
 - (void)accessibilityElementDidLoseFocus {
   if (![self isAccessibilityBridgeAlive])
     return;
+  [self bridge]->AccessibilityObjectDidLoseFocus([self uid]);
   if ([self node].HasAction(flutter::SemanticsAction::kDidLoseAccessibilityFocus)) {
     [self bridge]->DispatchSemanticsAction([self uid],
                                            flutter::SemanticsAction::kDidLoseAccessibilityFocus);
@@ -549,8 +557,7 @@ flutter::SemanticsAction GetSemanticsActionForScrollDirection(
   // `accessibilityContainer` and `accessibilityElementAtIndex`.
   if (self = [super initWithAccessibilityContainer:object.bridge->view()]) {
     _semanticsObject = object;
-    flutter::FlutterPlatformViewsController* controller =
-        object.bridge->GetPlatformViewsController();
+    auto controller = object.bridge->GetPlatformViewsController();
     if (controller) {
       _platformView = [[controller->GetPlatformViewByID(object.node.platformViewId) view] retain];
     }

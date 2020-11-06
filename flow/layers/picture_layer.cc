@@ -20,7 +20,7 @@ PictureLayer::PictureLayer(const SkPoint& offset,
 void PictureLayer::Preroll(PrerollContext* context, const SkMatrix& matrix) {
   TRACE_EVENT0("flutter", "PictureLayer::Preroll");
 
-#if defined(OS_FUCHSIA)
+#if defined(LEGACY_FUCHSIA_EMBEDDER)
   CheckForChildLayerBelow(context);
 #endif
 
@@ -30,7 +30,7 @@ void PictureLayer::Preroll(PrerollContext* context, const SkMatrix& matrix) {
     TRACE_EVENT0("flutter", "PictureLayer::RasterCache (Preroll)");
 
     SkMatrix ctm = matrix;
-    ctm.postTranslate(offset_.x(), offset_.y());
+    ctm.preTranslate(offset_.x(), offset_.y());
 #ifndef SUPPORT_FRACTIONAL_TRANSLATION
     ctm = RasterCache::GetIntegralTransCTM(ctm);
 #endif
