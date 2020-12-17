@@ -36,6 +36,7 @@ extern const intptr_t kPlatformStrongDillSize;
 }
 
 #include "flutter/assets/directory_asset_bundle.h"
+#include "flutter/common/graphics/persistent_cache.h"
 #include "flutter/common/task_runners.h"
 #include "flutter/fml/command_line.h"
 #include "flutter/fml/file.h"
@@ -43,7 +44,6 @@ extern const intptr_t kPlatformStrongDillSize;
 #include "flutter/fml/message_loop.h"
 #include "flutter/fml/paths.h"
 #include "flutter/fml/trace_event.h"
-#include "flutter/shell/common/persistent_cache.h"
 #include "flutter/shell/common/rasterizer.h"
 #include "flutter/shell/common/switches.h"
 #include "flutter/shell/platform/embedder/embedder.h"
@@ -542,6 +542,8 @@ InferExternalViewEmbedderFromArgs(const FlutterCompositor* compositor) {
       SAFE_ACCESS(compositor, collect_backing_store_callback, nullptr);
   auto c_present_callback =
       SAFE_ACCESS(compositor, present_layers_callback, nullptr);
+  bool avoid_backing_store_cache =
+      SAFE_ACCESS(compositor, avoid_backing_store_cache, false);
 
   // Make sure the required callbacks are present
   if (!c_create_callback || !c_collect_callback || !c_present_callback) {
@@ -568,7 +570,8 @@ InferExternalViewEmbedderFromArgs(const FlutterCompositor* compositor) {
       };
 
   return {std::make_unique<flutter::EmbedderExternalViewEmbedder>(
-              create_render_target_callback, present_callback),
+              avoid_backing_store_cache, create_render_target_callback,
+              present_callback),
           false};
 }
 

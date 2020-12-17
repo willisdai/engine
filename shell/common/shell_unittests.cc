@@ -11,6 +11,7 @@
 #include <memory>
 
 #include "assets/directory_asset_bundle.h"
+#include "flutter/common/graphics/persistent_cache.h"
 #include "flutter/flow/layers/layer_tree.h"
 #include "flutter/flow/layers/picture_layer.h"
 #include "flutter/flow/layers/transform_layer.h"
@@ -21,7 +22,6 @@
 #include "flutter/fml/synchronization/count_down_latch.h"
 #include "flutter/fml/synchronization/waitable_event.h"
 #include "flutter/runtime/dart_vm.h"
-#include "flutter/shell/common/persistent_cache.h"
 #include "flutter/shell/common/platform_view.h"
 #include "flutter/shell/common/rasterizer.h"
 #include "flutter/shell/common/shell_test.h"
@@ -32,6 +32,7 @@
 #include "flutter/shell/common/vsync_waiter_fallback.h"
 #include "flutter/shell/version/version.h"
 #include "flutter/testing/testing.h"
+#include "gmock/gmock.h"
 #include "third_party/rapidjson/include/rapidjson/writer.h"
 #include "third_party/skia/include/core/SkPictureRecorder.h"
 #include "third_party/tonic/converter/dart_converter.h"
@@ -42,6 +43,77 @@
 
 namespace flutter {
 namespace testing {
+namespace {
+class MockPlatformViewDelegate : public PlatformView::Delegate {
+  MOCK_METHOD1(OnPlatformViewCreated, void(std::unique_ptr<Surface> surface));
+
+  MOCK_METHOD0(OnPlatformViewDestroyed, void());
+
+  MOCK_METHOD1(OnPlatformViewSetNextFrameCallback,
+               void(const fml::closure& closure));
+
+  MOCK_METHOD1(OnPlatformViewSetViewportMetrics,
+               void(const ViewportMetrics& metrics));
+
+  MOCK_METHOD1(OnPlatformViewDispatchPlatformMessage,
+               void(fml::RefPtr<PlatformMessage> message));
+
+  MOCK_METHOD1(OnPlatformViewDispatchPointerDataPacket,
+               void(std::unique_ptr<PointerDataPacket> packet));
+
+  MOCK_METHOD3(OnPlatformViewDispatchSemanticsAction,
+               void(int32_t id,
+                    SemanticsAction action,
+                    std::vector<uint8_t> args));
+
+  MOCK_METHOD1(OnPlatformViewSetSemanticsEnabled, void(bool enabled));
+
+  MOCK_METHOD1(OnPlatformViewSetAccessibilityFeatures, void(int32_t flags));
+
+  MOCK_METHOD1(OnPlatformViewRegisterTexture,
+               void(std::shared_ptr<Texture> texture));
+
+  MOCK_METHOD1(OnPlatformViewUnregisterTexture, void(int64_t texture_id));
+
+  MOCK_METHOD1(OnPlatformViewMarkTextureFrameAvailable,
+               void(int64_t texture_id));
+
+  MOCK_METHOD3(LoadDartDeferredLibrary,
+               void(intptr_t loading_unit_id,
+                    std::unique_ptr<const fml::Mapping> snapshot_data,
+                    std::unique_ptr<const fml::Mapping> snapshot_instructions));
+
+  MOCK_METHOD3(LoadDartDeferredLibraryError,
+               void(intptr_t loading_unit_id,
+                    const std::string error_message,
+                    bool transient));
+
+  MOCK_METHOD1(UpdateAssetManager,
+               void(std::shared_ptr<AssetManager> asset_manager));
+};
+
+class MockSurface : public Surface {
+  MOCK_METHOD0(IsValid, bool());
+
+  MOCK_METHOD1(AcquireFrame,
+               std::unique_ptr<SurfaceFrame>(const SkISize& size));
+
+  MOCK_CONST_METHOD0(GetRootTransformation, SkMatrix());
+
+  MOCK_METHOD0(GetContext, GrDirectContext*());
+
+  MOCK_METHOD0(MakeRenderContextCurrent, std::unique_ptr<GLContextResult>());
+
+  MOCK_METHOD0(ClearRenderContext, bool());
+};
+
+class MockPlatformView : public PlatformView {
+ public:
+  MockPlatformView(MockPlatformViewDelegate& delegate, TaskRunners task_runners)
+      : PlatformView(delegate, task_runners) {}
+  MOCK_METHOD0(CreateRenderingSurface, std::unique_ptr<Surface>());
+};
+}  // namespace
 
 static bool ValidateShell(Shell* shell) {
   if (!shell) {
@@ -130,7 +202,7 @@ TEST_F(ShellTest, InitializeWithDifferentThreads) {
   ASSERT_FALSE(DartVMRef::IsInstanceRunning());
   Settings settings = CreateSettingsForFixture();
   ThreadHost thread_host("io.flutter.test." + GetCurrentTestName() + ".",
-                         ThreadHost::Type::Platform | ThreadHost::Type::GPU |
+                         ThreadHost::Type::Platform | ThreadHost::Type::RASTER |
                              ThreadHost::Type::IO | ThreadHost::Type::UI);
   TaskRunners task_runners("test", thread_host.platform_thread->GetTaskRunner(),
                            thread_host.raster_thread->GetTaskRunner(),
@@ -178,7 +250,7 @@ TEST_F(ShellTest,
   Settings settings = CreateSettingsForFixture();
   ThreadHost thread_host(
       "io.flutter.test." + GetCurrentTestName() + ".",
-      ThreadHost::Type::GPU | ThreadHost::Type::IO | ThreadHost::Type::UI);
+      ThreadHost::Type::RASTER | ThreadHost::Type::IO | ThreadHost::Type::UI);
   fml::MessageLoop::EnsureInitializedForCurrentThread();
   TaskRunners task_runners("test",
                            fml::MessageLoop::GetCurrent().GetTaskRunner(),
@@ -1001,7 +1073,13 @@ TEST_F(ShellTest,
 // TODO(https://github.com/flutter/flutter/issues/59816): Enable on fuchsia.
 // TODO(https://github.com/flutter/flutter/issues/66056): Deflake on all other
 // platforms
-TEST_F(ShellTest, DISABLED_SkipAndSubmitFrame) {
+TEST_F(ShellTest,
+#if defined(OS_FUCHSIA)
+       DISABLED_SkipAndSubmitFrame
+#else
+       SkipAndSubmitFrame
+#endif
+) {
   auto settings = CreateSettingsForFixture();
   fml::AutoResetWaitableEvent end_frame_latch;
   std::shared_ptr<ShellTestExternalViewEmbedder> external_view_embedder;
@@ -1009,8 +1087,11 @@ TEST_F(ShellTest, DISABLED_SkipAndSubmitFrame) {
   auto end_frame_callback =
       [&](bool should_resubmit_frame,
           fml::RefPtr<fml::RasterThreadMerger> raster_thread_merger) {
-        external_view_embedder->UpdatePostPrerollResult(
-            PostPrerollResult::kSuccess);
+        if (should_resubmit_frame && !raster_thread_merger->IsMerged()) {
+          raster_thread_merger->MergeWithLease(10);
+          external_view_embedder->UpdatePostPrerollResult(
+              PostPrerollResult::kSuccess);
+        }
         end_frame_latch.Signal();
       };
   external_view_embedder = std::make_shared<ShellTestExternalViewEmbedder>(
@@ -1031,12 +1112,15 @@ TEST_F(ShellTest, DISABLED_SkipAndSubmitFrame) {
 
   // `EndFrame` changed the post preroll result to `kSuccess`.
   end_frame_latch.Wait();
-  ASSERT_EQ(0, external_view_embedder->GetSubmittedFrameCount());
 
-  PumpOneFrame(shell.get());
+  // Let the resubmitted frame to run and `GetSubmittedFrameCount` should be
+  // called.
   end_frame_latch.Wait();
+  // 2 frames are submitted because `kSkipAndRetryFrame`, but only the 2nd frame
+  // should be submitted with `external_view_embedder`, hence the below check.
   ASSERT_EQ(1, external_view_embedder->GetSubmittedFrameCount());
 
+  PlatformViewNotifyDestroyed(shell.get());
   DestroyShell(std::move(shell));
 }
 
@@ -1051,12 +1135,18 @@ TEST_F(ShellTest,
   auto settings = CreateSettingsForFixture();
   fml::AutoResetWaitableEvent end_frame_latch;
   std::shared_ptr<ShellTestExternalViewEmbedder> external_view_embedder;
-
+  fml::RefPtr<fml::RasterThreadMerger> raster_thread_merger_ref;
   auto end_frame_callback =
       [&](bool should_resubmit_frame,
           fml::RefPtr<fml::RasterThreadMerger> raster_thread_merger) {
-        external_view_embedder->UpdatePostPrerollResult(
-            PostPrerollResult::kSuccess);
+        if (!raster_thread_merger_ref) {
+          raster_thread_merger_ref = raster_thread_merger;
+        }
+        if (should_resubmit_frame && !raster_thread_merger->IsMerged()) {
+          raster_thread_merger->MergeWithLease(10);
+          external_view_embedder->UpdatePostPrerollResult(
+              PostPrerollResult::kSuccess);
+        }
         end_frame_latch.Signal();
       };
   external_view_embedder = std::make_shared<ShellTestExternalViewEmbedder>(
@@ -1064,7 +1154,6 @@ TEST_F(ShellTest,
 
   auto shell = CreateShell(std::move(settings), GetTaskRunnersForFixture(),
                            false, external_view_embedder);
-
   PlatformViewNotifyCreated(shell.get());
 
   auto configuration = RunConfiguration::InferFromSettings(settings);
@@ -1074,13 +1163,19 @@ TEST_F(ShellTest,
   ASSERT_EQ(0, external_view_embedder->GetSubmittedFrameCount());
 
   PumpOneFrame(shell.get());
-  // `EndFrame` changed the post preroll result to `kSuccess`.
+  // `EndFrame` changed the post preroll result to `kSuccess` and merged the
+  // threads. During the frame, the threads are not merged, So no
+  // `external_view_embedder->GetSubmittedFrameCount()` is called.
   end_frame_latch.Wait();
+  ASSERT_TRUE(raster_thread_merger_ref->IsMerged());
+
+  // This is the resubmitted frame, which threads are also merged.
+  end_frame_latch.Wait();
+  // 2 frames are submitted because `kResubmitFrame`, but only the 2nd frame
+  // should be submitted with `external_view_embedder`, hence the below check.
   ASSERT_EQ(1, external_view_embedder->GetSubmittedFrameCount());
 
-  end_frame_latch.Wait();
-  ASSERT_EQ(2, external_view_embedder->GetSubmittedFrameCount());
-
+  PlatformViewNotifyDestroyed(shell.get());
   DestroyShell(std::move(shell));
 }
 
@@ -2020,14 +2115,29 @@ TEST_F(ShellTest, DiscardLayerTreeOnResize) {
   SkISize expected_size = SkISize::Make(400, 200);
 
   fml::AutoResetWaitableEvent end_frame_latch;
+  std::shared_ptr<ShellTestExternalViewEmbedder> external_view_embedder;
+  fml::RefPtr<fml::RasterThreadMerger> raster_thread_merger_ref;
+  auto end_frame_callback =
+      [&](bool should_merge_thread,
+          fml::RefPtr<fml::RasterThreadMerger> raster_thread_merger) {
+        if (!raster_thread_merger_ref) {
+          raster_thread_merger_ref = raster_thread_merger;
+        }
+        if (should_merge_thread) {
+          // TODO(cyanglaz): This test used external_view_embedder so we need to
+          // merge the threads here. However, the scenario it is testing is
+          // unrelated to platform views. We should consider to update this test
+          // so it doesn't require external_view_embedder.
+          // https://github.com/flutter/flutter/issues/69895
+          raster_thread_merger->MergeWithLease(10);
+          external_view_embedder->UpdatePostPrerollResult(
+              PostPrerollResult::kSuccess);
+        }
+        end_frame_latch.Signal();
+      };
 
-  auto end_frame_callback = [&](bool, fml::RefPtr<fml::RasterThreadMerger>) {
-    end_frame_latch.Signal();
-  };
-
-  std::shared_ptr<ShellTestExternalViewEmbedder> external_view_embedder =
-      std::make_shared<ShellTestExternalViewEmbedder>(
-          std::move(end_frame_callback), PostPrerollResult::kSuccess, true);
+  external_view_embedder = std::make_shared<ShellTestExternalViewEmbedder>(
+      std::move(end_frame_callback), PostPrerollResult::kResubmitFrame, true);
 
   std::unique_ptr<Shell> shell = CreateShell(
       settings, GetTaskRunnersForFixture(), false, external_view_embedder);
@@ -2048,8 +2158,6 @@ TEST_F(ShellTest, DiscardLayerTreeOnResize) {
 
   RunEngine(shell.get(), std::move(configuration));
 
-  fml::WeakPtr<RuntimeDelegate> runtime_delegate = shell->GetEngine();
-
   PumpOneFrame(shell.get(), static_cast<double>(wrong_size.width()),
                static_cast<double>(wrong_size.height()));
 
@@ -2057,14 +2165,20 @@ TEST_F(ShellTest, DiscardLayerTreeOnResize) {
 
   ASSERT_EQ(0, external_view_embedder->GetSubmittedFrameCount());
 
+  // Threads will be merged at the end of this frame.
   PumpOneFrame(shell.get(), static_cast<double>(expected_size.width()),
                static_cast<double>(expected_size.height()));
 
   end_frame_latch.Wait();
+  ASSERT_TRUE(raster_thread_merger_ref->IsMerged());
 
+  end_frame_latch.Wait();
+  // 2 frames are submitted because `kResubmitFrame`, but only the 2nd frame
+  // should be submitted with `external_view_embedder`, hence the below check.
   ASSERT_EQ(1, external_view_embedder->GetSubmittedFrameCount());
   ASSERT_EQ(expected_size, external_view_embedder->GetLastSubmittedFrameSize());
 
+  PlatformViewNotifyDestroyed(shell.get());
   DestroyShell(std::move(shell));
 }
 
@@ -2274,6 +2388,53 @@ TEST_F(ShellTest, AssetManagerMulti) {
         std::find(expected_results.begin(), expected_results.end(), result),
         expected_results.end());
   }
+}
+
+TEST_F(ShellTest, Spawn) {
+  auto settings = CreateSettingsForFixture();
+  auto shell = CreateShell(settings);
+  ASSERT_TRUE(ValidateShell(shell.get()));
+
+  auto configuration = RunConfiguration::InferFromSettings(settings);
+  ASSERT_TRUE(configuration.IsValid());
+  configuration.SetEntrypoint("fixturesAreFunctionalMain");
+
+  fml::AutoResetWaitableEvent main_latch;
+  AddNativeCallback(
+      "SayHiFromFixturesAreFunctionalMain",
+      CREATE_NATIVE_ENTRY([&main_latch](auto args) { main_latch.Signal(); }));
+
+  RunEngine(shell.get(), std::move(configuration));
+  main_latch.Wait();
+  ASSERT_TRUE(DartVMRef::IsInstanceRunning());
+
+  {
+    fml::AutoResetWaitableEvent latch;
+    fml::TaskRunner::RunNowOrPostTask(
+        shell->GetTaskRunners().GetPlatformTaskRunner(),
+        [this, &spawner = shell, &latch, settings]() {
+          MockPlatformViewDelegate platform_view_delegate;
+          auto spawn = spawner->Spawn(
+              settings,
+              [&platform_view_delegate](Shell& shell) {
+                auto result = std::make_unique<MockPlatformView>(
+                    platform_view_delegate, shell.GetTaskRunners());
+                ON_CALL(*result, CreateRenderingSurface())
+                    .WillByDefault(::testing::Invoke(
+                        [] { return std::make_unique<MockSurface>(); }));
+                return result;
+              },
+              [](Shell& shell) { return std::make_unique<Rasterizer>(shell); });
+          ASSERT_NE(nullptr, spawn.get());
+          ASSERT_TRUE(ValidateShell(spawn.get()));
+          DestroyShell(std::move(spawn));
+          latch.Signal();
+        });
+    latch.Wait();
+  }
+
+  DestroyShell(std::move(shell));
+  ASSERT_FALSE(DartVMRef::IsInstanceRunning());
 }
 
 }  // namespace testing

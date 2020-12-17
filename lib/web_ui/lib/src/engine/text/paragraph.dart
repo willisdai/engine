@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// @dart = 2.10
+// @dart = 2.12
 part of engine;
 
 const ui.Color _defaultTextColor = ui.Color(0xFFFF0000);
@@ -21,10 +21,12 @@ class EngineLineMetrics implements ui.LineMetrics {
     required this.baseline,
     required this.lineNumber,
   })  : displayText = null,
+        ellipsis = null,
         startIndex = -1,
         endIndex = -1,
         endIndexWithoutNewlines = -1,
-        widthWithTrailingSpaces = width;
+        widthWithTrailingSpaces = width,
+        boxes = null;
 
   EngineLineMetrics.withText(
     String this.displayText, {
@@ -44,14 +46,43 @@ class EngineLineMetrics implements ui.LineMetrics {
         assert(width != null), // ignore: unnecessary_null_comparison
         assert(left != null), // ignore: unnecessary_null_comparison
         assert(lineNumber != null && lineNumber >= 0), // ignore: unnecessary_null_comparison
+        ellipsis = null,
         ascent = double.infinity,
         descent = double.infinity,
         unscaledAscent = double.infinity,
         height = double.infinity,
-        baseline = double.infinity;
+        baseline = double.infinity,
+        boxes = null;
+
+  EngineLineMetrics.rich(
+    this.lineNumber, {
+    required this.ellipsis,
+    required this.startIndex,
+    required this.endIndex,
+    required this.endIndexWithoutNewlines,
+    required this.hardBreak,
+    required this.width,
+    required this.widthWithTrailingSpaces,
+    required this.left,
+    required this.height,
+    required this.baseline,
+    // Didn't use `this.boxes` because we want it to be non-null in this
+    // constructor.
+    required List<RangeBox> boxes,
+  })  : displayText = null,
+        ascent = double.infinity,
+        descent = double.infinity,
+        unscaledAscent = double.infinity,
+        this.boxes = boxes;
 
   /// The text to be rendered on the screen representing this line.
   final String? displayText;
+
+  /// The string to be displayed as an overflow indicator.
+  ///
+  /// When the value is non-null, it means this line is overflowing and the
+  /// [ellipsis] needs to be displayed at the end of it.
+  final String? ellipsis;
 
   /// The index (inclusive) in the text where this line begins.
   final int startIndex;
@@ -65,6 +96,10 @@ class EngineLineMetrics implements ui.LineMetrics {
   /// The index (exclusive) in the text where this line ends, ignoring newline
   /// characters.
   final int endIndexWithoutNewlines;
+
+  /// The list of boxes representing the entire line, possibly across multiple
+  /// spans.
+  final List<RangeBox>? boxes;
 
   @override
   final bool hardBreak;
@@ -104,6 +139,10 @@ class EngineLineMetrics implements ui.LineMetrics {
 
   @override
   final int lineNumber;
+
+  bool overlapsWith(int startIndex, int endIndex) {
+    return startIndex < this.endIndex && this.startIndex < endIndex;
+  }
 
   @override
   int get hashCode => ui.hashValues(
@@ -162,13 +201,42 @@ class EngineLineMetrics implements ui.LineMetrics {
   }
 }
 
-/// The web implementation of [ui.Paragraph].
-class EngineParagraph implements ui.Paragraph {
+/// Common interface for all the implementations of [ui.Paragraph] in the web
+/// engine.
+abstract class EngineParagraph implements ui.Paragraph {
+  /// Whether this paragraph has been laid out or not.
+  bool get isLaidOut;
+
+  /// Whether this paragraph can be drawn on a bitmap canvas.
+  bool get drawOnCanvas;
+
+  /// Whether this paragraph is doing arbitrary paint operations that require
+  /// a bitmap canvas, and can't be expressed in a DOM canvas.
+  bool get hasArbitraryPaint;
+
+  void paint(BitmapCanvas canvas, ui.Offset offset);
+
+  /// Generates a flat string computed from all the spans of the paragraph.
+  String toPlainText();
+
+  /// Returns a DOM element that represents the entire paragraph and its
+  /// children.
+  ///
+  /// Generates a new DOM element on every invocation.
+  html.HtmlElement toDomElement();
+}
+
+/// Uses the DOM and hierarchical <span> elements to represent the span of the
+/// paragraph.
+///
+/// This implementation will go away once the new [CanvasParagraph] is
+/// complete and turned on by default.
+class DomParagraph implements EngineParagraph {
   /// This class is created by the engine, and should not be instantiated
   /// or extended directly.
   ///
-  /// To create a [ui.Paragraph] object, use a [ui.ParagraphBuilder].
-  EngineParagraph({
+  /// To create a [DomParagraph] object, use a [DomParagraphBuilder].
+  DomParagraph({
     required html.HtmlElement paragraphElement,
     required ParagraphGeometricStyle geometricStyle,
     required String? plainText,
@@ -216,6 +284,7 @@ class EngineParagraph implements ui.Paragraph {
 
   bool get _hasLineMetrics => _measurementResult?.lines != null;
 
+  // Defaulting to -1 for non-laid-out paragraphs like the native engine does.
   @override
   double get width => _measurementResult?.width ?? -1;
 
@@ -337,6 +406,7 @@ class EngineParagraph implements ui.Paragraph {
 
   bool get hasArbitraryPaint => _geometricStyle.ellipsis != null;
 
+  @override
   void paint(BitmapCanvas canvas, ui.Offset offset) {
     assert(drawOnCanvas);
     assert(isLaidOut);
@@ -349,7 +419,7 @@ class EngineParagraph implements ui.Paragraph {
     }
 
     final List<EngineLineMetrics> lines = _measurementResult!.lines!;
-    canvas.setFontFromParagraphStyle(_geometricStyle);
+    canvas.setCssFont(_geometricStyle.cssFontString);
 
     // Then paint the text.
     canvas._setUpPaint(_paint!.paintData, null);
@@ -395,6 +465,13 @@ class EngineParagraph implements ui.Paragraph {
     }
   }
 
+  @override
+  String toPlainText() {
+    return _plainText ??
+        js_util.getProperty(_paragraphElement, 'textContent') as String;
+  }
+
+  @override
   html.HtmlElement toDomElement() {
     assert(isLaidOut);
 
@@ -565,7 +642,7 @@ class EngineParagraph implements ui.Paragraph {
   }
 
   ui.Paragraph _cloneWithText(String plainText) {
-    return EngineParagraph(
+    return DomParagraph(
       plainText: plainText,
       paragraphElement: _paragraphElement.clone(true) as html.HtmlElement,
       geometricStyle: _geometricStyle,
@@ -856,7 +933,38 @@ class EngineParagraphStyle implements ui.ParagraphStyle {
 
 /// The web implementation of [ui.TextStyle].
 class EngineTextStyle implements ui.TextStyle {
-  EngineTextStyle({
+  /// Constructs an [EngineTextStyle] with all properties being required.
+  ///
+  /// This is good for call sites that need to be updated whenever a new
+  /// property is added to [EngineTextStyle]. Non-updated call sites will fail
+  /// the build otherwise.
+  factory EngineTextStyle({
+    required ui.Color? color,
+    required ui.TextDecoration? decoration,
+    required ui.Color? decorationColor,
+    required ui.TextDecorationStyle? decorationStyle,
+    required double? decorationThickness,
+    required ui.FontWeight? fontWeight,
+    required ui.FontStyle? fontStyle,
+    required ui.TextBaseline? textBaseline,
+    required String? fontFamily,
+    required List<String>? fontFamilyFallback,
+    required double? fontSize,
+    required double? letterSpacing,
+    required double? wordSpacing,
+    required double? height,
+    required ui.Locale? locale,
+    required ui.Paint? background,
+    required ui.Paint? foreground,
+    required List<ui.Shadow>? shadows,
+    required List<ui.FontFeature>? fontFeatures,
+  }) = EngineTextStyle.only;
+
+  /// Constructs an [EngineTextStyle] with only the given properties.
+  ///
+  /// This constructor should be used sparingly in tests, for example. Or when
+  /// we know for sure that not all properties are needed.
+  EngineTextStyle.only({
     ui.Color? color,
     ui.TextDecoration? decoration,
     ui.Color? decorationColor,
@@ -902,6 +1010,21 @@ class EngineTextStyle implements ui.TextStyle {
         _foreground = foreground,
         _shadows = shadows;
 
+  /// Constructs an [EngineTextStyle] by reading properties from an
+  /// [EngineParagraphStyle].
+  factory EngineTextStyle.fromParagraphStyle(
+    EngineParagraphStyle paragraphStyle,
+  ) {
+    return EngineTextStyle.only(
+      fontWeight: paragraphStyle._fontWeight,
+      fontStyle: paragraphStyle._fontStyle,
+      fontFamily: paragraphStyle._fontFamily,
+      fontSize: paragraphStyle._fontSize,
+      height: paragraphStyle._height,
+      locale: paragraphStyle._locale,
+    );
+  }
+
   final ui.Color? _color;
   final ui.TextDecoration? _decoration;
   final ui.Color? _decorationColor;
@@ -935,6 +1058,33 @@ class EngineTextStyle implements ui.TextStyle {
       return DomRenderer.defaultFontFamily;
     }
     return _fontFamily;
+  }
+
+  String? _cssFontString;
+
+  /// Font string to be used in CSS.
+  ///
+  /// See <https://developer.mozilla.org/en-US/docs/Web/CSS/font>.
+  String get cssFontString {
+    return _cssFontString ??= _buildCssFontString(
+      fontStyle: _fontStyle,
+      fontWeight: _fontWeight,
+      fontSize: _fontSize,
+      fontFamily: _effectiveFontFamily,
+    );
+  }
+
+  late final TextHeightStyle heightStyle = _createHeightStyle();
+
+  TextHeightStyle _createHeightStyle() {
+    return TextHeightStyle(
+      fontFamily: _effectiveFontFamily,
+      fontSize: _fontSize ?? DomRenderer.defaultFontSize,
+      height: _height,
+      // TODO(mdebbar): Pass the actual value when font features become supported
+      //                https://github.com/flutter/flutter/issues/64595
+      fontFeatures: null,
+    );
   }
 
   @override
@@ -1114,7 +1264,7 @@ class EngineStrutStyle implements ui.StrutStyle {
 }
 
 /// The web implementation of [ui.ParagraphBuilder].
-class EngineParagraphBuilder implements ui.ParagraphBuilder {
+class DomParagraphBuilder implements ui.ParagraphBuilder {
   /// Marks a call to the [pop] method in the [_ops] list.
   static final Object _paragraphBuilderPop = Object();
 
@@ -1122,9 +1272,9 @@ class EngineParagraphBuilder implements ui.ParagraphBuilder {
   final EngineParagraphStyle _paragraphStyle;
   final List<dynamic> _ops = <dynamic>[];
 
-  /// Creates an [EngineParagraphBuilder] object, which is used to create a
-  /// [EngineParagraph].
-  EngineParagraphBuilder(EngineParagraphStyle style) : _paragraphStyle = style {
+  /// Creates a [DomParagraphBuilder] object, which is used to create a
+  /// [DomParagraph].
+  DomParagraphBuilder(EngineParagraphStyle style) : _paragraphStyle = style {
     // TODO(b/128317744): Implement support for strut font families.
     List<String?> strutFontFamilies;
     if (style._strutStyle != null) {
@@ -1230,14 +1380,17 @@ class EngineParagraphBuilder implements ui.ParagraphBuilder {
   /// paragraph. Plain text is more efficient to lay out and measure than rich
   /// text.
   EngineParagraph? _tryBuildPlainText() {
-    ui.Color color = _defaultTextColor;
+    ui.Color? color;
     ui.TextDecoration? decoration;
     ui.Color? decorationColor;
     ui.TextDecorationStyle? decorationStyle;
+    double? decorationThickness;
     ui.FontWeight? fontWeight = _paragraphStyle._fontWeight;
     ui.FontStyle? fontStyle = _paragraphStyle._fontStyle;
     ui.TextBaseline? textBaseline;
     String fontFamily = _paragraphStyle._fontFamily ?? DomRenderer.defaultFontFamily;
+    List<String>? fontFamilyFallback;
+    List<ui.FontFeature>? fontFeatures;
     double fontSize = _paragraphStyle._fontSize ?? DomRenderer.defaultFontSize;
     final ui.TextAlign textAlign = _paragraphStyle._effectiveTextAlign;
     final ui.TextDirection textDirection = _paragraphStyle._effectiveTextDirection;
@@ -1269,6 +1422,9 @@ class EngineParagraphBuilder implements ui.ParagraphBuilder {
       if (style._decorationStyle != null) {
         decorationStyle = style._decorationStyle;
       }
+      if (style._decorationThickness != null) {
+        decorationThickness = style._decorationThickness;
+      }
       if (style._fontWeight != null) {
         fontWeight = style._fontWeight;
       }
@@ -1279,6 +1435,12 @@ class EngineParagraphBuilder implements ui.ParagraphBuilder {
         textBaseline = style._textBaseline;
       }
       fontFamily = style._fontFamily;
+      if (style._fontFamilyFallback != null) {
+        fontFamilyFallback = style._fontFamilyFallback;
+      }
+      if (style._fontFeatures != null) {
+        fontFeatures = style._fontFeatures;
+      }
       if (style._fontSize != null) {
         fontSize = style._fontSize!;
       }
@@ -1306,15 +1468,22 @@ class EngineParagraphBuilder implements ui.ParagraphBuilder {
       i++;
     }
 
+    if (color == null && foreground == null) {
+      color = _defaultTextColor;
+    }
+
     final EngineTextStyle cumulativeStyle = EngineTextStyle(
       color: color,
       decoration: decoration,
       decorationColor: decorationColor,
       decorationStyle: decorationStyle,
+      decorationThickness: decorationThickness,
       fontWeight: fontWeight,
       fontStyle: fontStyle,
       textBaseline: textBaseline,
       fontFamily: fontFamily,
+      fontFamilyFallback: fontFamilyFallback,
+      fontFeatures: fontFeatures,
       fontSize: fontSize,
       letterSpacing: letterSpacing,
       wordSpacing: wordSpacing,
@@ -1330,14 +1499,14 @@ class EngineParagraphBuilder implements ui.ParagraphBuilder {
       paint = foreground;
     } else {
       paint = ui.Paint();
-      paint.color = color;
+      paint.color = color!;
     }
 
     if (i >= _ops.length) {
       // Empty paragraph.
       _applyTextStyleToElement(
           element: _paragraphElement, style: cumulativeStyle);
-      return EngineParagraph(
+      return DomParagraph(
         paragraphElement: _paragraphElement,
         geometricStyle: ParagraphGeometricStyle(
           textDirection: _paragraphStyle._effectiveTextDirection,
@@ -1394,7 +1563,7 @@ class EngineParagraphBuilder implements ui.ParagraphBuilder {
       _applyTextBackgroundToElement(
           element: _paragraphElement, style: cumulativeStyle);
     }
-    return EngineParagraph(
+    return DomParagraph(
       paragraphElement: _paragraphElement,
       geometricStyle: ParagraphGeometricStyle(
         textDirection: _paragraphStyle._effectiveTextDirection,
@@ -1450,7 +1619,7 @@ class EngineParagraphBuilder implements ui.ParagraphBuilder {
       }
     }
 
-    return EngineParagraph(
+    return DomParagraph(
       paragraphElement: _paragraphElement,
       geometricStyle: ParagraphGeometricStyle(
         textDirection: _paragraphStyle._effectiveTextDirection,
@@ -1595,6 +1764,9 @@ void _applyTextStyleToElement({
   final ui.Color? color = style._foreground?.color ?? style._color;
   if (color != null) {
     cssStyle.color = colorToCssString(color);
+  }
+  if (style._height != null) {
+    cssStyle.lineHeight = '${style._height}';
   }
   if (style._fontSize != null) {
     cssStyle.fontSize = '${style._fontSize!.floor()}px';

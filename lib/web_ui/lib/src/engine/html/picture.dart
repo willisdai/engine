@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// @dart = 2.10
+// @dart = 2.12
 part of engine;
 
 // TODO(yjbanov): this is currently very naive. We probably want to cache
@@ -51,6 +51,7 @@ class _PaintRequest {
 List<_PaintRequest> _paintQueue = <_PaintRequest>[];
 
 void _recycleCanvas(EngineCanvas? canvas) {
+  assert(canvas == null || !_recycledCanvases.contains(canvas));
   if (canvas is BitmapCanvas) {
     canvas.setElementCache(null);
     if (canvas.isReusable()) {
@@ -313,10 +314,14 @@ class PersistedPicture extends PersistedLeafSurface {
       // painting. This removes all the setup work and scaffolding objects
       // that won't be useful for anything anyway.
       _recycleCanvas(oldCanvas);
+      if (oldSurface != null) {
+        // Make sure it doesn't get reused/recycled again.
+        oldSurface._canvas = null;
+      }
       if (rootElement != null) {
         domRenderer.clearDom(rootElement!);
       }
-      if (_canvas != null) {
+      if (_canvas != null && _canvas != oldCanvas) {
         _recycleCanvas(_canvas);
       }
       _canvas = null;
@@ -345,8 +350,9 @@ class PersistedPicture extends PersistedLeafSurface {
     }
 
     final bool didRequireBitmap =
-        existingSurface.picture.recordingCanvas!.hasArbitraryPaint;
-    final bool requiresBitmap = picture.recordingCanvas!.hasArbitraryPaint;
+        existingSurface.picture.recordingCanvas!.renderStrategy.hasArbitraryPaint;
+    final bool requiresBitmap =
+        picture.recordingCanvas!.renderStrategy.hasArbitraryPaint;
     if (didRequireBitmap != requiresBitmap) {
       // Switching canvas types is always expensive.
       return 1.0;
@@ -387,7 +393,7 @@ class PersistedPicture extends PersistedLeafSurface {
   Matrix4? get localTransformInverse => null;
 
   void applyPaint(EngineCanvas? oldCanvas) {
-    if (picture.recordingCanvas!.hasArbitraryPaint) {
+    if (picture.recordingCanvas!.renderStrategy.hasArbitraryPaint) {
       _applyBitmapPaint(oldCanvas);
     } else {
       _applyDomPaint(oldCanvas);
@@ -395,7 +401,7 @@ class PersistedPicture extends PersistedLeafSurface {
   }
 
   void _applyDomPaint(EngineCanvas? oldCanvas) {
-    _recycleCanvas(oldCanvas);
+    _recycleCanvas(_canvas);
     _canvas = DomCanvas(rootElement!);
     domRenderer.clearDom(rootElement!);
     picture.recordingCanvas!.apply(_canvas!, _optimalLocalCullRect);
@@ -439,9 +445,7 @@ class PersistedPicture extends PersistedLeafSurface {
                 bitmapCanvas.bitmapPixelCount;
           }
           domRenderer.clearDom(rootElement!);
-          if (_canvas is BitmapCanvas) {
-            rootElement!.append(_canvas!.rootElement);
-          }
+          rootElement!.append(_canvas!.rootElement);
           _canvas!.clear();
           picture.recordingCanvas!.apply(_canvas!, _optimalLocalCullRect);
         },
@@ -516,7 +520,8 @@ class PersistedPicture extends PersistedLeafSurface {
     if (_debugShowCanvasReuseStats) {
       DebugCanvasReuseOverlay.instance.createdCount++;
     }
-    final BitmapCanvas canvas = BitmapCanvas(bounds, density: _density);
+    final BitmapCanvas canvas = BitmapCanvas(bounds,
+      picture.recordingCanvas!.renderStrategy, density: _density);
     canvas.setElementCache(_elementCache);
     if (_debugExplainSurfaceStats) {
       _surfaceStatsFor(this)
@@ -590,6 +595,7 @@ class PersistedPicture extends PersistedLeafSurface {
   @override
   void discard() {
     _recycleCanvas(_canvas);
+    _canvas = null;
     super.discard();
   }
 
